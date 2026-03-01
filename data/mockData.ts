@@ -1,5 +1,5 @@
 /**
- * Mock data for Moro UI shell. Replace with real API/DB later.
+ * Mock data for Moro Match UI shell. Replace with real API/DB later.
  */
 
 export interface MockCelebrity {

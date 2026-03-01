@@ -72,7 +72,7 @@ export default function PublicProfileScreen() {
   const handlePoke = () => {
     Alert.alert(
       "Poke sent!",
-      `${user.displayName} will get a notification that someone thinks they could be your match on Moro.`
+      `${user.displayName} will get a notification that someone thinks they could be your match on Moro Match.`
     );
   };
 

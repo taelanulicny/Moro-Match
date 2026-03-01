@@ -160,7 +160,7 @@ export default function SettingsScreen() {
             <Text style={styles.dangerButtonText}>Delete Account</Text>
           </TouchableOpacity>
           <Text style={styles.disclaimer}>
-            Moro is for entertainment only. We are not affiliated with any
+            Moro Match is for entertainment only. We are not affiliated with any
             celebrity. No endorsement implied.
           </Text>
         </View>

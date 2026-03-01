@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Moro",
+    "name": "Moro Match",
     "slug": "moro-celeblookalike",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -10,7 +10,10 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.morosystems.moro"
+      "bundleIdentifier": "com.morosystems.moro",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -22,6 +25,7 @@
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "permissions": [
+        "android.permission.RECORD_AUDIO",
         "android.permission.RECORD_AUDIO"
       ]
     },
@@ -47,8 +51,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Moro to access your photos to upload a selfie.",
-          "cameraPermission": "Allow Moro to use your camera to take a selfie."
+          "photosPermission": "Allow Moro Match to access your photos to upload a selfie.",
+          "cameraPermission": "Allow Moro Match to use your camera to take a selfie."
         }
       ]
     ],
@@ -62,6 +66,12 @@
         "projectId": "fa89b7c3-cf18-4d97-bf7e-d15dbc049b3b"
       }
     },
-    "owner": "moro-systems-llc"
+    "owner": "moro-systems-llc",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/fa89b7c3-cf18-4d97-bf7e-d15dbc049b3b"
+    }
   }
 }

@@ -33,9 +33,9 @@ export default function WelcomeScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.content}>
-        <Text style={styles.title}>Moro</Text>
+        <Text style={styles.title}>Moro Match</Text>
         <Text style={styles.tagline}>
-          While you can{"'"}t date the actual celebrity, sign up to find the next best match on Moro.
+          While you can{"'"}t date the actual celebrity, sign up to find the next best match on Moro Match.
         </Text>
         <TouchableOpacity
           style={styles.button}

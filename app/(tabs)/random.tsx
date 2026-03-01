@@ -64,7 +64,7 @@ export default function RandomScreen() {
     if (!user) return;
     Alert.alert(
       "Poke sent!",
-      `${user.displayName} will get a notification that someone thinks they could be your match on Moro.`,
+      `${user.displayName} will get a notification that someone thinks they could be your match on Moro Match.`,
       [{ text: "OK", onPress: handleNextUser }]
     );
   };
