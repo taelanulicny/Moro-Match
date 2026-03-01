@@ -1,45 +1,38 @@
--- Moro — Minimal MVP Schema
--- Run against Postgres (e.g. Supabase). For pgvector, enable extension first:
--- CREATE EXTENSION IF NOT EXISTS vector;
-
--- Optional: use vector(n) when pgvector is enabled; otherwise omit face_embedding columns
--- and do all similarity in application code.
+-- Moro — Run this ENTIRE script once in Supabase SQL Editor
+-- It creates the tables (if they don't exist) and seeds celebrities.
 
 -- =============================================================================
--- Celebrities (curated list; precomputed embeddings)
+-- 1. Celebrities table
 -- =============================================================================
-CREATE TABLE celebrities (
+CREATE TABLE IF NOT EXISTS celebrities (
   id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name       text NOT NULL,
   slug       text NOT NULL UNIQUE,
-  -- face_embedding vector(512),  -- uncomment when using pgvector
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_celebrities_slug ON celebrities (slug);
+CREATE INDEX IF NOT EXISTS idx_celebrities_slug ON celebrities (slug);
 
 -- =============================================================================
--- Users
+-- 2. Users table
 -- =============================================================================
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
   id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   auth_id               text NOT NULL UNIQUE,
   display_name          text NOT NULL,
-  gender                text,                    -- 'male' | 'female'
-  age                   integer,                 -- required at signup, 18+
+  gender                text,
+  age                   integer,
   selfie_url            text,
-  additional_photo_urls text[] DEFAULT '{}',     -- extra profile photos; first = main
-  -- face_embedding      vector(512),  -- uncomment when using pgvector
+  additional_photo_urls text[] DEFAULT '{}',
   matched_celebrity_id   uuid REFERENCES celebrities (id),
-  matched_celebrity_name text,                    -- from Clarifai when not in celebrities table
-  similarity_percent    integer DEFAULT 0,        -- 0-100 from face match
+  matched_celebrity_name text,
+  similarity_percent     integer DEFAULT 0,
   bio                   text,
   instagram_handle      text,
   tiktok_handle         text,
   socials_visible       boolean NOT NULL DEFAULT true,
   subscription_tier     text NOT NULL DEFAULT 'free' CHECK (subscription_tier IN ('free', 'premium')),
   subscription_ends_at  timestamptz,
-  -- Discovery & notifications (Settings)
   push_enabled          boolean NOT NULL DEFAULT true,
   discovery_gender      text NOT NULL DEFAULT 'everyone' CHECK (discovery_gender IN ('everyone', 'men', 'women')),
   discovery_age_min     integer NOT NULL DEFAULT 18,
@@ -48,24 +41,11 @@ CREATE TABLE users (
   updated_at            timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_users_auth_id ON users (auth_id);
-CREATE INDEX idx_users_matched_celebrity ON users (matched_celebrity_id);
+CREATE INDEX IF NOT EXISTS idx_users_auth_id ON users (auth_id);
+CREATE INDEX IF NOT EXISTS idx_users_matched_celebrity ON users (matched_celebrity_id);
 
 -- =============================================================================
--- Phase 2: Extra matches for premium ($1/mo)
--- =============================================================================
--- CREATE TABLE user_celebrity_matches (
---   user_id      uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
---   celebrity_id uuid NOT NULL REFERENCES celebrities (id),
---   rank         smallint NOT NULL,
---   score        real,
---   created_at   timestamptz NOT NULL DEFAULT now(),
---   PRIMARY KEY (user_id, celebrity_id)
--- );
--- CREATE INDEX idx_user_celebrity_matches_user ON user_celebrity_matches (user_id);
-
--- =============================================================================
--- Updated_at trigger (optional)
+-- 3. Updated_at trigger
 -- =============================================================================
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS TRIGGER AS $$
@@ -75,7 +55,19 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS users_updated_at ON users;
 CREATE TRIGGER users_updated_at
   BEFORE UPDATE ON users
   FOR EACH ROW
   EXECUTE PROCEDURE set_updated_at();
+
+-- =============================================================================
+-- 4. Seed celebrities (safe to run more than once)
+-- =============================================================================
+INSERT INTO celebrities (name, slug) VALUES
+  ('Leonardo DiCaprio', 'leonardo-dicaprio'),
+  ('Zendaya', 'zendaya'),
+  ('Timothée Chalamet', 'timothee-chalamet'),
+  ('Margot Robbie', 'margot-robbie'),
+  ('Ryan Gosling', 'ryan-gosling')
+ON CONFLICT (slug) DO NOTHING;

@@ -1,4 +1,4 @@
-# Next Best — Architecture & Schema (MVP)
+# Moro — Architecture & Schema (MVP)
 
 Lightweight design for a meme-style “who’s your celebrity twin?” app. No overengineering; built for low cost and simple iteration.
 
