@@ -1,32 +1,48 @@
-import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { supabase } from '@/lib/supabase';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as ImagePicker from 'expo-image-picker';
-import { router } from 'expo-router';
-import { useState } from 'react';
+import { router, useLocalSearchParams } from 'expo-router';
+import { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  Image,
-  useWindowDimensions,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    Image,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    useWindowDimensions,
+    View,
 } from 'react-native';
 
 const BUCKET = 'Avatars';
 
+type Celebrity = { id: string; name: string; slug: string };
+
 export default function UploadSelfieScreen() {
+  const params = useLocalSearchParams<{ celebrityId?: string; celebrityName?: string }>();
   const [pickedUri, setPickedUri] = useState<string | null>(null);
   const [uploadedUrl, setUploadedUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [matching, setMatching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedCelebrity, setSelectedCelebrity] = useState<Celebrity | null>(null);
   const { width: screenWidth } = useWindowDimensions();
   const horizontalPadding = 24;
   const contentWidth = screenWidth - horizontalPadding * 2;
   const photoSize = Math.min(contentWidth, 400);
 
   const hasImage = !!pickedUri;
+  const canContinue = !!uploadedUrl && !!selectedCelebrity;
+
+  useEffect(() => {
+    if (params.celebrityId && params.celebrityName) {
+      setSelectedCelebrity({
+        id: params.celebrityId,
+        name: decodeURIComponent(params.celebrityName),
+        slug: '',
+      });
+    }
+  }, [params.celebrityId, params.celebrityName]);
 
   const requestLibraryPermission = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -114,44 +130,6 @@ export default function UploadSelfieScreen() {
 
       if (updateErr) throw updateErr;
 
-      // Trigger face match (Clarifai Edge Function) — await so we can log and surface errors
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.access_token) {
-        const fnUrl = `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/face-match`;
-        try {
-          const fnRes = await fetch(fnUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${session.access_token}`,
-            },
-            body: JSON.stringify({ imageUrl: publicUrl, authId: user.id }),
-          });
-          const body = await fnRes.text();
-          if (!fnRes.ok) {
-            console.warn('[face-match]', fnRes.status, body);
-          } else {
-            console.log('[face-match]', fnRes.status, body);
-          }
-        } catch (e) {
-          console.warn('[face-match] request failed', e);
-        }
-      }
-
-      const { data: existing } = await supabase
-        .from('user_photos')
-        .select('id, display_order')
-        .eq('auth_id', user.id)
-        .order('display_order', { ascending: true });
-      for (let i = (existing?.length ?? 0) - 1; i >= 0; i--) {
-        await supabase.from('user_photos').update({ display_order: i + 1 }).eq('id', existing![i].id);
-      }
-      await supabase.from('user_photos').insert({
-        auth_id: user.id,
-        storage_path: path,
-        display_order: 0,
-      });
-
       setUploadedUrl(publicUrl);
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Upload failed.';
@@ -162,11 +140,65 @@ export default function UploadSelfieScreen() {
     }
   };
 
-  const handleContinue = () => {
-    router.replace({
-      pathname: '/results',
-      params: uploadedUrl ? { selfieUrl: uploadedUrl } : undefined,
-    });
+  const handleContinue = async () => {
+    if (!uploadedUrl || !selectedCelebrity) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) {
+      setError('Sign in to continue.');
+      return;
+    }
+    const user = session.user;
+    setError(null);
+    setMatching(true);
+    const fnUrl = `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/face-match`;
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (session.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`;
+      }
+      const res = await fetch(fnUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          userImageUrl: uploadedUrl,
+          celebrityId: selectedCelebrity.id,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 401) {
+          setError('Session expired or not signed in. Sign out and sign in again, then try again.');
+        } else {
+          const msg = body?.error ?? body?.details ?? `Request failed (${res.status})`;
+          setError(typeof msg === 'string' ? msg : 'Face match failed.');
+        }
+        setMatching(false);
+        return;
+      }
+      const similarityScore = body?.similarity?.score ?? body?.score ?? null;
+      const isMatch = body?.is_match ?? body?.similarity?.is_match ?? null;
+      const confidence = body?.similarity?.description ?? body?.confidence ?? body?.description ?? null;
+      await supabase
+        .from('users')
+        .update({
+          selected_celebrity_id: selectedCelebrity.id,
+          similarity_score: similarityScore,
+          is_match: isMatch,
+          confidence: confidence != null ? String(confidence) : null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('auth_id', user.id);
+      setMatching(false);
+      router.replace({
+        pathname: '/results',
+        params: uploadedUrl ? { selfieUrl: uploadedUrl } : undefined,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Something went wrong.');
+      setMatching(false);
+    }
   };
 
   const showPickOptions = () => {
@@ -184,9 +216,9 @@ export default function UploadSelfieScreen() {
   return (
     <View style={[styles.container, { paddingHorizontal: horizontalPadding }]}>
       <View style={styles.header}>
-        <Text style={styles.title}>Find your celebrity match</Text>
+        <Text style={styles.title}>See how much similar you are to a celebrity</Text>
         <Text style={styles.subtitle}>
-          Upload a clear selfie — we{"'"}ll tell you who you look like.
+          Upload a clear selfie — and then choose the celebrity people say you look like.
         </Text>
       </View>
 
@@ -250,19 +282,33 @@ export default function UploadSelfieScreen() {
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.primaryButton, (!hasImage || !uploadedUrl) && styles.primaryButtonDisabled]}
+          style={[styles.celebrityButton, selectedCelebrity && styles.celebrityButtonSelected]}
+          onPress={() => router.push('/choose-celebrity')}
+          activeOpacity={0.8}
+        >
+          <MaterialIcons name="person" size={20} color={selectedCelebrity ? '#fff' : '#000'} style={styles.buttonIcon} />
+          <Text style={[styles.celebrityButtonText, selectedCelebrity && styles.celebrityButtonTextSelected]}>
+            {selectedCelebrity ? selectedCelebrity.name : 'People tell me I look like…'}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.primaryButton, !canContinue && styles.primaryButtonDisabled]}
           onPress={handleContinue}
           activeOpacity={0.8}
-          disabled={!hasImage || !uploadedUrl || uploading}
+          disabled={!canContinue || uploading || matching}
         >
-          <Text
-            style={[
-              styles.primaryButtonText,
-              (!hasImage || !uploadedUrl) && styles.primaryButtonTextDisabled,
-            ]}
-          >
-            See my match
-          </Text>
+          {matching ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text
+              style={[
+                styles.primaryButtonText,
+                !canContinue && styles.primaryButtonTextDisabled,
+              ]}
+            >
+              What percent am I like them?
+            </Text>
+          )}
         </TouchableOpacity>
       </View>
     </View>
@@ -368,6 +414,27 @@ const styles = StyleSheet.create({
   actions: {
     width: '100%',
     gap: 12,
+  },
+  celebrityButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: '#E0E0E0',
+  },
+  celebrityButtonSelected: {
+    backgroundColor: '#000',
+    borderColor: '#000',
+  },
+  celebrityButtonText: {
+    color: '#000',
+    fontSize: 17,
+    fontWeight: '600',
+  },
+  celebrityButtonTextSelected: {
+    color: '#fff',
   },
   secondaryButton: {
     flexDirection: 'row',

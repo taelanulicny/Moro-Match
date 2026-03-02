@@ -1,6 +1,6 @@
-// Supabase Edge Function: Face Match (Clarifai)
-// Sends user selfie to Clarifai celebrity model → gets best match + confidence
-// Updates users.matched_celebrity_id, users.similarity_percent, users.matched_celebrity_name
+// Supabase Edge Function: Face Match (1-to-1 comparison)
+// Compares user selfie (image1) to one selected celebrity image (image2) via Replicate apna-mart/face-match.
+// Returns the model output directly (similarity, is_match, confidence, etc.). No embeddings or vector search.
 
 // @ts-ignore - Deno resolves URL imports at runtime
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -12,121 +12,12 @@ declare global {
   };
 }
 
-const CLARIFAI_API = 'https://api.clarifai.com/v2/users/clarifai/apps/main/models/celebrity-face-recognition/versions/0676ebddd5d6413ebdaa101570295a39/outputs';
-
-interface ClarifaiConcept {
-  id?: string;
-  name: string;
-  value: number;
-}
-
-interface ClarifaiRegion {
-  data?: {
-    face?: {
-      identity?: {
-        concepts?: ClarifaiConcept[];
-      };
-    };
-  };
-}
-
-interface ClarifaiOutput {
-  data?: {
-    regions?: ClarifaiRegion[];
-    concepts?: ClarifaiConcept[];
-  };
-}
-
-interface ClarifaiResponse {
-  status?: { code?: number; description?: string };
-  outputs?: ClarifaiOutput[];
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
-}
-
-async function callClarifai(pat: string, imageUrl: string): Promise<{ name: string; confidence: number } | null> {
-  const imageRes = await fetch(imageUrl);
-  if (!imageRes.ok) throw new Error(`Failed to fetch image: ${imageRes.status}`);
-  const imageBuffer = await imageRes.arrayBuffer();
-  const base64Image = arrayBufferToBase64(imageBuffer);
-
-  const res = await fetch(CLARIFAI_API, {
-    method: 'POST',
-    headers: {
-      Authorization: `Key ${pat}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      inputs: [{ data: { image: { base64: base64Image } } }],
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Clarifai API error: ${res.status} ${err}`);
-  }
-
-  const json = (await res.json()) as ClarifaiResponse;
-  console.log('CLARIFAI RAW RESPONSE:');
-  console.log(JSON.stringify(json, null, 2));
-  if (json.status?.code !== 10000) {
-    throw new Error(json.status?.description || 'Clarifai request failed');
-  }
-
-  const output = json.outputs?.[0];
-  if (!output?.data) {
-    console.error('Clarifai: no output.data', JSON.stringify(json).slice(0, 500));
-    return null;
-  }
-
-  // For celebrity-face-recognition model, concepts are typically in regions[].data.concepts
-  let concepts: ClarifaiConcept[] = [];
-  const regions = output.data.regions || [];
-
-  for (const r of regions) {
-    const regionConcepts = r.data?.concepts;
-    if (regionConcepts?.length) {
-      concepts = regionConcepts;
-      break;
-    }
-  }
-
-  // Fallback to top-level concepts if regions missing
-  if (!concepts.length && output.data.concepts?.length) {
-    concepts = output.data.concepts;
-  }
-
-  if (!concepts.length) {
-    console.error('Clarifai: no concepts in response', JSON.stringify({ regions: output.data.regions?.length, topLevelConcepts: output.data.concepts?.length }));
-    return null;
-  }
-
-  const top = concepts.reduce((a, b) => (b.value > a.value ? b : a), concepts[0]);
-  return { name: top.name, confidence: top.value };
-}
-
-function normalizeName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
-}
-
-function nameMatches(a: string, b: string): boolean {
-  const na = normalizeName(a);
-  const nb = normalizeName(b);
-  return na === nb || na.includes(nb) || nb.includes(na);
-}
+const REPLICATE_API = 'https://api.replicate.com/v1/predictions';
+const FACE_MATCH_MODEL = 'apna-mart/face-match';
 
 Deno.serve(async (req: Request) => {
-  console.log("FACE-MATCH FUNCTION INVOKED");
-  console.log("Method:", req.method);
-  console.log("Headers:", Object.fromEntries(req.headers.entries()));
+  console.log('FACE-MATCH FUNCTION INVOKED');
+  console.log('Method:', req.method);
 
   if (req.method === 'OPTIONS') {
     return new Response(null, {
@@ -145,10 +36,14 @@ Deno.serve(async (req: Request) => {
     });
   }
 
-  const pat = Deno.env.get('CLARIFAI_PAT');
-  if (!pat) {
+  const token = Deno.env.get('REPLICATE_API_TOKEN');
+  if (!token || token.trim() === '') {
+    console.error('REPLICATE_API_TOKEN is missing. Set it in Edge Function secrets.');
     return new Response(
-      JSON.stringify({ error: 'CLARIFAI_PAT not configured' }),
+      JSON.stringify({
+        error: 'Face match not configured',
+        details: 'REPLICATE_API_TOKEN is not set. Add it in Supabase Dashboard → Edge Functions → face-match → Secrets.',
+      }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }
@@ -157,27 +52,7 @@ Deno.serve(async (req: Request) => {
   const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const supabase = createClient(supabaseUrl, supabaseKey);
 
-  const authHeader = req.headers.get('Authorization');
-  if (!authHeader?.startsWith('Bearer ')) {
-    return new Response(JSON.stringify({ error: 'Missing or invalid Authorization' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  const userToken = authHeader.slice(7);
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser(userToken);
-  if (authError || !user) {
-    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  let body: { imageUrl?: string; selfieUrl?: string; authId?: string };
+  let body: { userImageUrl?: string; celebrityId?: string };
   try {
     body = await req.json();
   } catch {
@@ -187,77 +62,88 @@ Deno.serve(async (req: Request) => {
     });
   }
 
-  const imageUrl = body.imageUrl || body.selfieUrl;
-  const authId = body.authId || user.id;
+  const userImageUrl = body.userImageUrl;
+  const celebrityId = body.celebrityId;
 
-  if (!imageUrl) {
-    return new Response(JSON.stringify({ error: 'imageUrl required' }), {
+  if (!userImageUrl || typeof userImageUrl !== 'string' || !userImageUrl.trim()) {
+    return new Response(JSON.stringify({ error: 'userImageUrl is required' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  if (!celebrityId || typeof celebrityId !== 'string' || !celebrityId.trim()) {
+    return new Response(JSON.stringify({ error: 'celebrityId is required' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
     });
   }
 
-  if (authId !== user.id) {
-    return new Response(JSON.stringify({ error: 'Forbidden' }), {
-      status: 403,
+  const { data: celebrity, error: celebError } = await supabase
+    .from('celebrities')
+    .select('id, name, image_url')
+    .eq('id', celebrityId)
+    .maybeSingle();
+
+  if (celebError) {
+    return new Response(
+      JSON.stringify({ error: 'Failed to load celebrity', details: celebError.message }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+  if (!celebrity?.image_url) {
+    return new Response(JSON.stringify({ error: 'Celebrity not found or has no image_url' }), {
+      status: 404,
       headers: { 'Content-Type': 'application/json' },
     });
   }
 
+  const celebrityImageUrl = celebrity.image_url as string;
+
   try {
-    const result = await callClarifai(pat, imageUrl);
-    const celebrityName = result?.name ?? null;
-    const similarityPercent = result ? Math.round(result.confidence * 100) : 0;
-
-    // Try to match to our celebrities table
-    let matchedCelebrityId: string | null = null;
-    let matchedCelebrityName: string | null = celebrityName;
-
-    if (celebrityName) {
-      const { data: celebs } = await supabase.from('celebrities').select('id, name, slug');
-      const match = celebs?.find(
-        (c: { id: string; name: string; slug: string }) =>
-          nameMatches(c.name, celebrityName) ||
-          nameMatches(c.slug, celebrityName) ||
-          nameMatches(celebrityName, c.name)
-      );
-      if (match) {
-        matchedCelebrityId = match.id;
-        matchedCelebrityName = null; // We have it in our table
-      }
-    }
-
-    const { error: updateErr } = await supabase
-      .from('users')
-      .update({
-        matched_celebrity_id: matchedCelebrityId,
-        matched_celebrity_name: matchedCelebrityName,
-        similarity_percent: similarityPercent,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('auth_id', authId);
-
-    if (updateErr) {
-      return new Response(
-        JSON.stringify({ error: 'Failed to update user', details: updateErr.message }),
-        { status: 500, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    return new Response(
-      JSON.stringify({
-        matched_celebrity_id: matchedCelebrityId,
-        matched_celebrity_name: matchedCelebrityName,
-        similarity_percent: similarityPercent,
-      }),
-      {
-        status: 200,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
+    const createRes = await fetch(REPLICATE_API, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Prefer: 'wait=60',
+      },
+      body: JSON.stringify({
+        version: FACE_MATCH_MODEL,
+        input: {
+          image1: userImageUrl.trim(),
+          image2: celebrityImageUrl,
         },
-      }
-    );
+      }),
+    });
+
+    if (!createRes.ok) {
+      const err = await createRes.text();
+      throw new Error(`Replicate API error: ${createRes.status} ${err}`);
+    }
+
+    const prediction = (await createRes.json()) as {
+      status?: string;
+      output?: unknown;
+      error?: string;
+      logs?: string;
+    };
+
+    if (prediction.status === 'failed') {
+      throw new Error(prediction.error || prediction.logs || 'Replicate prediction failed');
+    }
+
+    const output = prediction.output;
+    if (output == null) {
+      throw new Error('Replicate returned no output');
+    }
+
+    return new Response(JSON.stringify(output), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      },
+    });
   } catch (e) {
     console.error('Face match error:', e);
     return new Response(

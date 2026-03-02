@@ -9,14 +9,10 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
   useWindowDimensions,
 } from 'react-native';
-
-const POLL_INTERVAL_MS = 2500;
-const POLL_MAX_ATTEMPTS = 20;
 
 export default function ResultsScreen() {
   const { selfieUrl } = useLocalSearchParams<{ selfieUrl?: string }>();
@@ -26,23 +22,14 @@ export default function ResultsScreen() {
   const cardTopHeight = cardWidth / 0.75;
 
   const [dbUser, setDbUser] = useState<{
-    display_name: string;
-    age: number | null;
     selfie_url: string | null;
-    bio: string | null;
-    instagram_handle: string | null;
-    tiktok_handle: string | null;
-    matched_celebrity_id: string | null;
-    matched_celebrity_name: string | null;
-    similarity_percent: number | null;
+    selected_celebrity_id: string | null;
+    similarity_score: number | null;
+    is_match: boolean | null;
+    confidence: string | null;
     celebrities?: { id: string; name: string; slug: string } | null;
   } | null>(null);
   const [loading, setLoading] = useState(true);
-  const [findingMatch, setFindingMatch] = useState(false);
-  const [bio, setBio] = useState('');
-  const [instagramHandle, setInstagramHandle] = useState('');
-  const [tiktokHandle, setTiktokHandle] = useState('');
-  const [saving, setSaving] = useState(false);
 
   const fetchUser = useCallback(async () => {
     const { data: { session } } = await supabase.auth.getSession();
@@ -53,15 +40,12 @@ export default function ResultsScreen() {
     }
     const { data, error } = await supabase
       .from('users')
-      .select('display_name, age, selfie_url, bio, instagram_handle, tiktok_handle, matched_celebrity_id, matched_celebrity_name, similarity_percent, celebrities(id, name, slug)')
+      .select('selfie_url, selected_celebrity_id, similarity_score, is_match, confidence, celebrities(id, name, slug)')
       .eq('auth_id', session.user.id)
       .maybeSingle();
 
     if (!error && data) {
       setDbUser(data);
-      setBio(data.bio ?? '');
-      setInstagramHandle(data.instagram_handle ?? '');
-      setTiktokHandle(data.tiktok_handle ?? '');
     } else {
       setDbUser(null);
     }
@@ -72,55 +56,14 @@ export default function ResultsScreen() {
     fetchUser();
   }, [fetchUser]);
 
-  // Poll for match when we have no match yet (just uploaded)
-  useEffect(() => {
-    if (!dbUser || loading) return;
-    const hasMatch = dbUser.matched_celebrity_id || dbUser.matched_celebrity_name || (dbUser.similarity_percent ?? 0) > 0;
-    if (hasMatch) {
-      setFindingMatch(false);
-      return;
-    }
-    setFindingMatch(true);
-    let attempts = 0;
-    const id = setInterval(async () => {
-      attempts++;
-      if (attempts >= POLL_MAX_ATTEMPTS) {
-        setFindingMatch(false);
-        clearInterval(id);
-        return;
-      }
-      await fetchUser();
-    }, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [loading, fetchUser, dbUser?.matched_celebrity_id, dbUser?.matched_celebrity_name, dbUser?.similarity_percent]);
-
   const celebrity = dbUser?.celebrities
     ? { id: dbUser.celebrities.id, name: dbUser.celebrities.name, slug: dbUser.celebrities.slug }
-    : dbUser?.matched_celebrity_name
-      ? { id: '', name: dbUser.matched_celebrity_name, slug: '' }
-      : null;
+    : null;
 
   const photoUrl = selfieUrl ?? dbUser?.selfie_url ?? null;
-  const displayName = dbUser?.display_name ?? 'You';
-  const age = dbUser?.age ?? 18;
-  const oneLineBio = (bio.trim() || dbUser?.bio) ?? '';
-  const similarityPercent = dbUser?.similarity_percent ?? 0;
-
-  const handleSaveProfile = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) return;
-    setSaving(true);
-    await supabase
-      .from('users')
-      .update({
-        bio: bio.trim() || null,
-        instagram_handle: instagramHandle.trim() || null,
-        tiktok_handle: tiktokHandle.trim() || null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('auth_id', session.user.id);
-    setSaving(false);
-  };
+  const similarityScore = dbUser?.similarity_score ?? null;
+  const isMatch = dbUser?.is_match ?? false;
+  const confidence = dbUser?.confidence ?? null;
 
   const handleFindNextBest = () => {
     router.replace('/(tabs)');
@@ -147,7 +90,6 @@ export default function ResultsScreen() {
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.container}>
@@ -164,23 +106,26 @@ export default function ResultsScreen() {
               )}
             </View>
             <View style={styles.cardBottom}>
-              <Text style={styles.cardName} numberOfLines={1}>
-                {displayName}, {age}
-              </Text>
-              {oneLineBio ? (
-                <Text style={styles.cardBio} numberOfLines={1}>
-                  {oneLineBio}
+              {celebrity ? (
+                <Text style={styles.cardCeleb} numberOfLines={1}>
+                  {celebrity.name}
                 </Text>
               ) : null}
-              <Text style={styles.cardCeleb} numberOfLines={1}>
-                {findingMatch ? (
-                  'Finding your match…'
-                ) : !celebrity?.name && similarityPercent === 0 ? (
-                  'No face detected. Try a clear front-facing selfie.'
-                ) : (
-                  `${celebrity?.name ?? '—'} · ${similarityPercent}%`
-                )}
-              </Text>
+              {similarityScore != null ? (
+                <Text style={styles.cardScore}>
+                  {Math.round(Number(similarityScore) * 100)}% similar
+                </Text>
+              ) : null}
+              {isMatch != null && (
+                <Text style={styles.cardMatch}>
+                  {isMatch ? 'Match' : 'No match'}
+                </Text>
+              )}
+              {confidence ? (
+                <Text style={styles.cardConfidence} numberOfLines={1}>
+                  {confidence}
+                </Text>
+              ) : null}
             </View>
           </View>
 
@@ -195,55 +140,6 @@ export default function ResultsScreen() {
               Don{"'"}t agree? Try a different photo
             </Text>
           </TouchableOpacity>
-
-          <View style={styles.profileSection}>
-            <Text style={styles.profileSectionTitle}>Set up your profile</Text>
-            <Text style={styles.profileSectionHint}>
-              Optional. Add a bio and paste your profile links. Others can tap to open your Instagram or TikTok.
-            </Text>
-            <Text style={styles.inputLabel}>Bio</Text>
-            <TextInput
-              style={styles.bioInput}
-              value={bio}
-              onChangeText={setBio}
-              placeholder="A short bio about you..."
-              placeholderTextColor="#999"
-              multiline
-              numberOfLines={3}
-            />
-            <Text style={styles.inputLabel}>Instagram</Text>
-            <TextInput
-              style={styles.input}
-              value={instagramHandle}
-              onChangeText={setInstagramHandle}
-              placeholder="Paste your Instagram profile link"
-              placeholderTextColor="#999"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <Text style={styles.inputLabel}>TikTok</Text>
-            <TextInput
-              style={styles.input}
-              value={tiktokHandle}
-              onChangeText={setTiktokHandle}
-              placeholder="Paste your TikTok profile link"
-              placeholderTextColor="#999"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <TouchableOpacity
-              style={styles.saveButton}
-              onPress={handleSaveProfile}
-              disabled={saving}
-              activeOpacity={0.8}
-            >
-              {saving ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Text style={styles.saveButtonText}>Save profile</Text>
-              )}
-            </TouchableOpacity>
-          </View>
 
           <View style={styles.actions}>
             <TouchableOpacity
@@ -304,28 +200,33 @@ const styles = StyleSheet.create({
     backgroundColor: '#E8E8E8',
   },
   cardBottom: {
-    height: 76,
+    minHeight: 76,
     backgroundColor: '#B0B0C8',
     paddingVertical: 10,
     paddingHorizontal: 10,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  cardName: {
+  cardCeleb: {
     fontSize: 16,
     fontWeight: '700',
     color: '#1a1a1a',
     marginBottom: 2,
   },
-  cardBio: {
-    fontSize: 12,
-    color: 'rgba(0,0,0,0.75)',
-    marginBottom: 4,
-    fontStyle: 'italic',
-  },
-  cardCeleb: {
-    fontSize: 13,
+  cardScore: {
+    fontSize: 15,
     color: 'rgba(0,0,0,0.85)',
+    marginBottom: 2,
+  },
+  cardMatch: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: 'rgba(0,0,0,0.75)',
+    marginBottom: 2,
+  },
+  cardConfidence: {
+    fontSize: 12,
+    color: 'rgba(0,0,0,0.65)',
   },
   previewLabel: {
     fontSize: 13,
@@ -343,68 +244,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#666',
     textDecorationLine: 'underline',
-  },
-  profileSection: {
-    width: '100%',
-    marginBottom: 28,
-    paddingTop: 20,
-    borderTopWidth: 1,
-    borderTopColor: '#E5E5E5',
-  },
-  profileSectionTitle: {
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#000',
-    marginBottom: 4,
-  },
-  profileSectionHint: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 16,
-  },
-  inputLabel: {
-    fontSize: 15,
-    fontWeight: '500',
-    color: '#000',
-    marginBottom: 6,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#E5E5E5',
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    fontSize: 17,
-    color: '#000',
-    marginBottom: 16,
-    backgroundColor: '#fff',
-    width: '100%',
-  },
-  bioInput: {
-    borderWidth: 1,
-    borderColor: '#E5E5E5',
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    fontSize: 17,
-    color: '#000',
-    marginBottom: 16,
-    backgroundColor: '#fff',
-    width: '100%',
-    minHeight: 80,
-    textAlignVertical: 'top',
-  },
-  saveButton: {
-    backgroundColor: '#333',
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  saveButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
   },
   actions: {
     width: '100%',

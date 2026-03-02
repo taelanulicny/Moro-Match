@@ -49,15 +49,12 @@ export default function AuthScreen() {
         ageValid &&
         !loading;
 
-  async function upsertUser(authId: string, displayName: string, userGender: Gender, userAge: number) {
+  async function upsertUser(authId: string) {
     const { error: upsertError } = await supabase
       .from('users')
       .upsert(
         {
           auth_id: authId,
-          display_name: displayName,
-          gender: userGender,
-          age: userAge,
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'auth_id' }
@@ -106,7 +103,7 @@ export default function AuthScreen() {
           if (signUpData.user) {
             if (signUpData.session) {
               try {
-                await upsertUser(signUpData.user.id, displayName, gender!, userAge);
+                await upsertUser(signUpData.user.id);
               } catch (upsertErr) {
                 const msg = upsertErr && typeof upsertErr === 'object' && 'message' in upsertErr
                   ? String((upsertErr as { message: unknown }).message)
@@ -125,7 +122,7 @@ export default function AuthScreen() {
         }
       } else if (signInData?.user) {
         try {
-          await upsertUser(signInData.user.id, displayName, gender!, userAge);
+          await upsertUser(signInData.user.id);
         } catch (upsertErr) {
           const msg = upsertErr && typeof upsertErr === 'object' && 'message' in upsertErr
             ? String((upsertErr as { message: unknown }).message)
